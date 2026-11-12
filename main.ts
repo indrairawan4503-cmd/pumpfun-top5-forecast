@@ -6,6 +6,13 @@
 // still top-20 forty minutes later, and coins that die collapse to the curve
 // floor (~30 SOL). Ten-minute log-cap changes are ~N(0, 0.12) with no usable
 // momentum (lag-1 autocorrelation ~ -0.1), so the honest forecast is a
+// v2 (2026-11-12): the size law is centred on the LAST mark's top-5 level
+// (the all-history mean lags when the level rises -- the practice top-5
+// level rose 2.19 -> 3.35 in 40 min) plus a saturating growth shift per
+// read horizon, mixed per read; coins are named only when p >= 0.005
+// (below the unnamed baseline a named coin scores worse than unnamed).
+// Backtest mean log score: -39.47 (v1) -> -35.91 (v2), every cut better.
+//
 // diffusive one: each coin's log-cap does a random walk with a heavily
 // shrunk drift, a per-hour death hazard that drops it to the floor, and
 // volatility growing with the square root of the horizon. New coins are born
@@ -30,13 +37,19 @@ const PATHS = 1000; // Monte Carlo paths
 const MAX_CANDIDATES = 2000; // coins simulated (highest last-known caps)
 const SEED = 0x9e3779b9; // fixed: deterministic output
 const TAU_DRIFT_H = 1.5; // drift saturates over ~this many hours
-const DEATH_PER_HOUR_CURVE = 0.35; // hazard a curve coin dies (drops to floor)
+const DEATH_PER_HOUR_CURVE = 0.2; // hazard a curve coin dies (drops to floor)
 const DEATH_PER_HOUR_POOL = 0.18; // hazard a graduated coin dies
 const FLOOR_SOL = 30; // dead coins sit at the bonding-curve floor
 const NEWCOMER_0 = 0.45; // share of a place a newcomer takes at horizon 0
 const NEWCOMER_MAX = 0.85; // ... saturating at this share over long horizons
 const NEWCOMER_TAU_H = 0.6; // newcomer share grows with this timescale
-const MIN_P = 0.0005; // smallest named probability per place
+const MIN_P = 0.005; // smallest named probability per place
+const SIZE_SHIFT = 0; // extra constant offset on the newcomer size law mean
+const GROWTH_G = 0.45; // saturating growth shift of the top-5 level (log10)
+const GROWTH_TAU_H = 0.5; // growth shift timescale (hours)
+const SIZE_SD_FLOOR = 0.35; // newcomer size law sd floor
+const SIGMA_MIN = 0.08;
+const SIGMA_MAX = 0.2;
 const MICRO = 1_000_000;
 
 interface Row {
@@ -161,7 +174,7 @@ const meanAll = allChanges.reduce((a, b) => a + b, 0) / Math.max(1, allChanges.l
 const varAll =
   allChanges.reduce((a, b) => a + (b - meanAll) * (b - meanAll), 0) /
   Math.max(1, allChanges.length);
-const sigma10 = Math.min(0.2, Math.max(0.08, Math.sqrt(varAll)));
+const sigma10 = Math.min(SIGMA_MAX, Math.max(SIGMA_MIN, Math.sqrt(varAll)));
 const sigmaHour = sigma10 * Math.sqrt(6);
 
 // Per-coin drift: shrunk toward zero, tiny venue bump, clamped.
@@ -179,14 +192,27 @@ const candidates = [...coins.values()]
 const n = candidates.length;
 if (n < task.places) throw new Error(`only ${n} coins known, fewer than ${task.places} places`);
 
-// Newcomer size distribution: the empirical top-5 caps of the history,
-// shifted up (the top-5 cap level grows as fresh cohorts take over) and
-// widened: a newcomer-held place is very uncertain in size.
-const meanTop5 = top5Logs.reduce((a, b) => a + b, 0) / top5Logs.length + 0.15;
-const sdTop5 = Math.max(
-  0.35,
-  Math.sqrt(top5Logs.reduce((a, b) => a + (b - meanTop5) * (b - meanTop5), 0) / top5Logs.length),
+// Newcomer size distribution: centred on the LAST mark's top-5 level (the
+// all-history mean lags badly when the level is rising), plus a saturating
+// growth shift per read horizon. Width: the within-mark spread of top-5
+// caps, floored -- the across-history spread is inflated by the level ramp.
+const lastMarkTop5 = marks[marks.length - 1]!.rows!.slice(0, task.places).map((r) =>
+  log10Sol(r.market_cap_lamports),
 );
+const lastTop5Mean =
+  lastMarkTop5.reduce((a, b) => a + b, 0) / Math.max(1, lastMarkTop5.length);
+const perMarkSd: number[] = [];
+for (const m of marks) {
+  const t5 = m.rows!.slice(0, task.places).map((r) => log10Sol(r.market_cap_lamports));
+  if (t5.length < 2) continue;
+  const mu = t5.reduce((a, b) => a + b, 0) / t5.length;
+  perMarkSd.push(Math.sqrt(t5.reduce((a, b) => a + (b - mu) * (b - mu), 0) / t5.length));
+}
+const sdTop5 = Math.max(
+  SIZE_SD_FLOOR,
+  perMarkSd.reduce((a, b) => a + b, 0) / Math.max(1, perMarkSd.length),
+);
+const growthShift = (h: number): number => GROWTH_G * (1 - Math.exp(-h / GROWTH_TAU_H));
 
 // ---- Monte Carlo over the answer reads ----
 const nReads = task.reads.length;
@@ -194,8 +220,8 @@ const placeCounts: Map<string, number>[] = Array.from(
   { length: task.places },
   () => new Map<string, number>(),
 );
-const sizeHist: number[][] = Array.from({ length: task.places }, () =>
-  new Array(task.size.edges.length + 1).fill(0),
+const sizeHist: number[][][] = Array.from({ length: nReads }, () =>
+  Array.from({ length: task.places }, () => new Array(task.size.edges.length + 1).fill(0)),
 );
 const binOf = (lg: number): number => {
   const e = task.size.edges;
@@ -280,11 +306,12 @@ for (let path = 0; path < PATHS; path++) {
         }
       }
     }
+    const gShift = growthShift(h);
     for (let k = 0; k < topIdx.length; k++) {
       const mint = candidates[topIdx[k]!]!.mint;
       const pc = placeCounts[k]!;
       pc.set(mint, (pc.get(mint) ?? 0) + 1);
-      sizeHist[k]![binOf(topVal[k]!)]! += 1;
+      sizeHist[r]![k]![binOf(topVal[k]! + gShift)]! += 1;
     }
   }
 }
@@ -343,17 +370,24 @@ interface SizeRow {
 const sizes: SizeRow[] = [];
 const edges = task.size.edges;
 for (let k = 0; k < task.places; k++) {
-  // Mixture: MC place-holder caps + newcomer caps (empirical top-5 law).
-  const mcTotal = sizeHist[k]!.reduce((a, b) => a + b, 0) || 1;
+  // Mixture over reads: per read, MC place-holder caps (growth-shifted)
+  // + newcomer caps ~ Normal(lastTop5Mean + growthShift(h) + SIZE_SHIFT, sdTop5).
   for (let bin = 0; bin <= edges.length; bin++) {
     const lo = bin === 0 ? -Infinity : edges[bin - 1]!;
     const hi = bin === edges.length ? Infinity : edges[bin]!;
-    const mcP = sizeHist[k]![bin]! / mcTotal;
-    // Newcomer cap ~ Normal(meanTop5, sdTop5) in log10.
-    const zLo = lo === -Infinity ? -Infinity : (lo - meanTop5) / sdTop5;
-    const zHi = hi === Infinity ? Infinity : (hi - meanTop5) / sdTop5;
-    const ncP = normCdf(zHi) - normCdf(zLo);
-    const p = floor6(namedShare * mcP + newcomerAvg * ncP);
+    let p = 0;
+    for (let r = 0; r < nReads; r++) {
+      const h = horizonsH[r]!;
+      const nc = NEWCOMER_MAX - (NEWCOMER_MAX - NEWCOMER_0) * Math.exp(-h / NEWCOMER_TAU_H);
+      const mcTotal = sizeHist[r]![k]!.reduce((a, b) => a + b, 0) || 1;
+      const mcP = sizeHist[r]![k]![bin]! / mcTotal;
+      const mu = lastTop5Mean + growthShift(h) + SIZE_SHIFT;
+      const zLo = lo === -Infinity ? -Infinity : (lo - mu) / sdTop5;
+      const zHi = hi === Infinity ? Infinity : (hi - mu) / sdTop5;
+      const ncP = normCdf(zHi) - normCdf(zLo);
+      p += ((1 - nc) * mcP + nc * ncP) / nReads;
+    }
+    p = floor6(p);
     if (p > 0) sizes.push({ place: k + 1, bin, p });
   }
 }
