@@ -15,6 +15,13 @@
 // v3 (2026-11-12): jump-diffusion (empirical 10-min tails: +1.3%/-2.8% beyond
 // 0.3 log), core diffusion capped at 0.10, newcomer ceiling 0.85 -> 0.92 for
 // the final window's 7-13 h horizons. Backtest mean: -35.91 -> -35.71.
+// v4 (2026-11-12): plateau model. The v2 dev score came back WORSE than v1
+// (-39.87 vs -38.63, size -19.81 vs -18.61): the practice level rose during
+// the history then plateaued/cooled in the dev reads, and v2's +0.45 growth
+// shift overshot it. The final window is a mature 11 h history, so the level
+// is at steady state: growth 0.45 -> 0.10, size sd floor 0.35 -> 0.50 to
+// hedge drift over 7-13 h. The practice backtest rewards ramp extrapolation
+// and will read v4 as worse; the dev score is the honest check.
 //
 // diffusive one: each coin's log-cap does a random walk with a heavily
 // shrunk drift, a per-hour death hazard that drops it to the floor, and
@@ -50,9 +57,9 @@ const NEWCOMER_MAX = 0.92; // ... saturating at this share over long horizons
 const NEWCOMER_TAU_H = 0.6; // newcomer share grows with this timescale
 const MIN_P = 0.005; // smallest named probability per place
 const SIZE_SHIFT = 0; // extra constant offset on the newcomer size law mean
-const GROWTH_G = 0.45; // saturating growth shift of the top-5 level (log10)
+const GROWTH_G = 0.1; // saturating growth shift of the top-5 level (log10)
 const GROWTH_TAU_H = 0.5; // growth shift timescale (hours)
-const SIZE_SD_FLOOR = 0.35; // newcomer size law sd floor
+const SIZE_SD_FLOOR = 0.5; // newcomer size law sd floor
 const SIGMA_MIN = 0.08;
 const SIGMA_MAX = 0.1; // core diffusion cap (tails come from jumps)
 const MICRO = 1_000_000;
