@@ -12,6 +12,9 @@
 // read horizon, mixed per read; coins are named only when p >= 0.005
 // (below the unnamed baseline a named coin scores worse than unnamed).
 // Backtest mean log score: -39.47 (v1) -> -35.91 (v2), every cut better.
+// v3 (2026-11-12): jump-diffusion (empirical 10-min tails: +1.3%/-2.8% beyond
+// 0.3 log), core diffusion capped at 0.10, newcomer ceiling 0.85 -> 0.92 for
+// the final window's 7-13 h horizons. Backtest mean: -35.91 -> -35.71.
 //
 // diffusive one: each coin's log-cap does a random walk with a heavily
 // shrunk drift, a per-hour death hazard that drops it to the floor, and
@@ -40,8 +43,10 @@ const TAU_DRIFT_H = 1.5; // drift saturates over ~this many hours
 const DEATH_PER_HOUR_CURVE = 0.2; // hazard a curve coin dies (drops to floor)
 const DEATH_PER_HOUR_POOL = 0.18; // hazard a graduated coin dies
 const FLOOR_SOL = 30; // dead coins sit at the bonding-curve floor
+const JUMP_UP_P = 0.013; // P(+0.3..0.7 log jump) per 10-min step (empirical tail)
+const JUMP_DN_P = 0.028; // P(-0.3..0.7 log crash) per 10-min step (empirical tail)
 const NEWCOMER_0 = 0.45; // share of a place a newcomer takes at horizon 0
-const NEWCOMER_MAX = 0.85; // ... saturating at this share over long horizons
+const NEWCOMER_MAX = 0.92; // ... saturating at this share over long horizons
 const NEWCOMER_TAU_H = 0.6; // newcomer share grows with this timescale
 const MIN_P = 0.005; // smallest named probability per place
 const SIZE_SHIFT = 0; // extra constant offset on the newcomer size law mean
@@ -49,7 +54,7 @@ const GROWTH_G = 0.45; // saturating growth shift of the top-5 level (log10)
 const GROWTH_TAU_H = 0.5; // growth shift timescale (hours)
 const SIZE_SD_FLOOR = 0.35; // newcomer size law sd floor
 const SIGMA_MIN = 0.08;
-const SIGMA_MAX = 0.2;
+const SIGMA_MAX = 0.1; // core diffusion cap (tails come from jumps)
 const MICRO = 1_000_000;
 
 interface Row {
@@ -283,7 +288,12 @@ for (let path = 0; path < PATHS; path++) {
         simLog[i] = floorLog + gauss() * 0.05;
         continue;
       }
-      simLog[i] = simLog[i] + dRow[i]! + sig * gauss();
+      const u = rand();
+      let step: number;
+      if (u < JUMP_UP_P) step = 0.3 + rand() * 0.4;
+      else if (u < JUMP_UP_P + JUMP_DN_P) step = -(0.3 + rand() * 0.4);
+      else step = sig * gauss();
+      simLog[i] = simLog[i] + dRow[i]! + step;
     }
     // Top 5 of this read (incremental, no sort).
     const topIdx: number[] = [];
