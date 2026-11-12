@@ -22,9 +22,9 @@ So the forecast is a diffusive one, not persistence:
 
 - Each coin's log-cap does a random walk with heavily shrunk drift (tiny pool/curve venue bump, saturating over ~1.5 h), volatility growing with the square root of the horizon, and a per-hour death hazard that drops it to the floor.
 - A large share of every place is deliberately left unnamed for coins born after the cut; that share grows with the horizon (about 0.55 at 10 minutes, saturating near 0.85 over hours).
-- One seeded Monte Carlo (fixed seed, fixed draw order — two runs write identical bytes) gives the place frequencies and per-place size distributions, averaged over the seven answer reads from `task.json`. Sizes mix the simulated place-holder caps with the empirical top-5 cap law for newcomer-held places.
+- One seeded Monte Carlo (fixed seed, fixed draw order — two runs write identical bytes) gives the place frequencies and per-place size distributions, averaged over the seven answer reads from `task.json`. Sizes mix the simulated place-holder caps with the empirical top-5 cap law for newcomer-held places. The size law is centred on the last mark's top-5 level (the all-history mean lags when the level rises — the practice top-5 level rose 2.19 → 3.35 in 40 min), plus a saturating growth shift per read horizon (0.45 log10, τ 0.5 h), mixed per read; coins are named only when p ≥ 0.005, below the unnamed baseline a named coin scores worse than unnamed.
 
-Backtest on the practice history (truncate after each mark, forecast the later marks, score with the competition's log score): the model beats the house baseline at every cut, mean +3.65 log points.
+Backtest on the practice history (truncate after each mark, forecast the later marks, score with the competition's log score): the model beats the house baseline at every cut, mean +3.65 log points (v1). After the v2 size-model retune (2026-11-12, tuned against the official dev-phase score — the v1 entry scored −38.63, rank 438/638), the backtest mean log score improved from −39.47 to −35.91, better at every cut.
 
 ---
 
